@@ -15,8 +15,9 @@ polls <- read_csv("https://filipvanlaenen.github.io/eopaod/gb-gbn-N.csv") %>%
          pollster = `Polling Firm`,
          `Reform UK` = `Brexit Party`) %>%
   mutate(Other = 100 - `Conservative Party` - `Labour Party` - `Liberal Democrats` - `Scottish National Party` - `Green Party` - `Reform UK`) %>%
-  mutate(across(parties, ~.x/100)) %>%
-  mutate(across(parties, ~ifelse(is.na(.x),-1,.x))) %>%
+  mutate(across(parties, ~size*.x/100)) %>%
+  mutate(across(all_of(parties), ~ifelse(is.na(.x),0,.x))) %>%
+  mutate(across(all_of(parties), ~as.integer(round(.x)))) %>%
   filter(start >= as.Date("2019-12-12"),
          !is.na(pollster)) %>%
   mutate(t = interval(start = as.Date("2019-12-12"), end = start) %/% weeks(1) + 1)
@@ -24,29 +25,33 @@ polls <- read_csv("https://filipvanlaenen.github.io/eopaod/gb-gbn-N.csv") %>%
 
 data_list <- list(
   T = max(polls$t),
-  J = 7,
+  J = length(parties),
   P = length(unique(polls$pollster)),
   N = nrow(polls),
   t = polls$t,
-  vi = polls[,parties],
+  vi = polls[,parties] %>% as.matrix,
   pollster = as_factor(polls$pollster) %>% as.numeric(),
   size = polls$size,
   vote0 = c(0.436, 0.321, 0.116, 0.039, 0.0261, 0.0201, 1 - sum(0.436, 0.321, 0.116, 0.039, 0.0261, 0.0201))
 )
 
-model <- cmdstan_model("models/poll_aggregator.stan")
+model <- cmdstan_model("models/multinomial_dirichlet_model.stan")
 
 fit <- model$sample(
   data = data_list,
-  chains = 6,
-  parallel_chains = 6,
+  chains = 4,
+  parallel_chains = 4,
   iter_warmup = 1000,
   iter_sampling = 1000
 )
 
 ### Create polling aggregation plot
 
-polls %>%
+polls_long <- polls
+polls_long[,parties] <- polls[,parties] / rowSums(polls[,parties])
+
+polls_long %>%
+  mutate(across(all_of(parties), ~ifelse(.x==0,NA,.x))) %>%
   pivot_longer(cols = all_of(parties), names_to = "party", values_to = "vote") %>%
   rename(date = start) %>%
   mutate(party = factor(party, levels = parties)) %>%
@@ -64,7 +69,7 @@ fit$draws("vote", format = "matrix") %>%
   mutate(party = factor(party, levels = parties)) %>%
   mutate(date = weeks(t-1) + date("2019-12-12")) %>%
   ggplot(aes(x = date)) +
-  geom_point(data = polls_long, aes(y = vote, color = party), alpha = 0.3, size = 0.75) +
+  geom_point(data = polls_long, aes(y = vote, color = party), alpha = 0.3) +
   geom_line(aes(y = `50%`, color = party)) +
   geom_ribbon(aes(ymin = `2.5%`, ymax = `97.5%`, fill = party), alpha = 0.3) +
   scale_color_manual(values = c("#2c88df","#d90f32","#f3a600","#fcf287","#3aa859","#42b6d1","grey")) +
